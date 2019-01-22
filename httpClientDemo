@@ -1,0 +1,279 @@
+package com.upower.tianyancha;
+
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.Charset;
+import java.text.MessageFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+import org.apache.http.ParseException;
+import org.apache.http.client.config.CookieSpecs;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.cookie.BasicClientCookie;
+import org.apache.http.protocol.HttpCoreContext;
+import org.apache.http.util.EntityUtils;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.upower.utils.StringX;
+
+public class CompanySearch {
+	private static ObjectMapper mapper = new ObjectMapper();
+	private static String filePath = CompanySearch.getPath() + "tianyan.propertyies";
+	
+	private static String username = "15980661563";
+	private static String password = "9a4b6fec6c7c2a0877b1a8ca86de2c99";//"upower123";
+	private static String baseUrl= "https://www.tianyancha.com";
+	private static String loginPath= "/cd/login.json";
+	private static String searchPath = "/search?key={0}";
+	private static String searchCss = ".result-list .search-item .search-result-single";
+	private static String idAttr = "data-id";
+	private static String baseInfoPath = "/company/{0}";
+	private static String userAgent = "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.62 Safari/537.36";
+	
+	private static CloseableHttpClient httpclient = null;
+	private static HttpClientContext httpcontext = null;
+	private static RequestConfig defaultConfig = null;
+	static {
+		System.out.println("初始化...");
+		try {
+			httpclient = HttpClients.createDefault();
+			defaultConfig = RequestConfig.custom().setCookieSpec(CookieSpecs.STANDARD_STRICT).setSocketTimeout(5000).setConnectTimeout(5000).build();//设置标准Cookie策略、请求和传输超时时间
+			httpclient = HttpClients.custom().setDefaultRequestConfig(defaultConfig).build();
+			httpcontext = HttpClientContext.create();
+			
+			CompanySearch.loadProperties();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		System.out.println("初始化结束...");
+	}
+	
+	private static Properties getProperties() throws IOException {
+		Properties properties = null; File file = new File(filePath);
+		if(!file.exists()) {
+			System.out.println("初始化配置文件...");
+			return CompanySearch.createProperties();
+		}
+		properties = new Properties();
+		InputStream in = new BufferedInputStream(new FileInputStream(filePath));
+		properties.load(in);
+		return properties;
+	}
+	
+	private static Properties createProperties() throws IOException {
+		Properties properties = new Properties();
+		File file = new File(filePath);
+		file.createNewFile();
+		FileOutputStream output = new FileOutputStream(file, false);
+		properties.setProperty("username", username);
+		properties.setProperty("password", password);
+		properties.setProperty("baseUrl", baseUrl);
+		properties.setProperty("loginPath", loginPath);
+		properties.setProperty("searchPath", searchPath);
+		properties.setProperty("searchCss", searchCss);
+		properties.setProperty("idAttr", idAttr);
+		properties.setProperty("baseInfoPath", baseInfoPath);
+		properties.setProperty("userAgent", userAgent);
+		properties.store(output, null);
+		output.close();
+		return properties;
+	}
+	
+	private static Properties loadProperties() throws IOException {
+		Properties properties = CompanySearch.getProperties();
+		
+		username = properties.getProperty("username", username);
+		password = properties.getProperty("password", password);
+		baseUrl = properties.getProperty("baseUrl", baseUrl);
+		loginPath = properties.getProperty("loginPath", loginPath);
+		searchPath = properties.getProperty("searchPath", searchPath);
+		searchCss = properties.getProperty("searchCss", searchCss);
+		idAttr = properties.getProperty("idAttr", idAttr);
+		baseInfoPath = properties.getProperty("baseInfoPath", baseInfoPath);
+		userAgent = properties.getProperty("userAgent", userAgent);
+		return properties;
+	}
+
+	public static List<Map<String,String>> searchByKey(String key) {
+		System.out.println("查询单位名称：" + key + "...");
+		try {
+			String dataUrl = MessageFormat.format(baseUrl + searchPath, java.net.URLEncoder.encode(key, "UTF-8"));
+			HttpGet get = new HttpGet(dataUrl);
+			get.setHeader("User-Agent", userAgent);
+//			get.setConfig(defaultConfig);
+			CloseableHttpResponse httpResponse = httpclient.execute(get, httpcontext);
+			HttpUriRequest realRequest = (HttpUriRequest)httpcontext.getAttribute(HttpCoreContext.HTTP_REQUEST);
+			String path = realRequest.getURI().getPath();
+			if("/login".equalsIgnoreCase(path)) {
+				return doLogin(key);
+			}
+			System.out.println("抓取和解析数据...");
+			// 返回值接收
+			String text = getResponseBody(httpResponse);
+			Document doc = Jsoup.parse(text);
+			// 页面属性选择 通过key值取到查询结果集
+			Elements items = doc.select(searchCss);
+			List<Map<String,String>> result = new ArrayList<Map<String, String>>();
+			for(Element e: items){
+				String dataId = e.attr(idAttr);
+				result.add(CompanySearch.getCompanyBaseInfo(dataId));
+	        }
+			ObjectMapper mapper = new ObjectMapper();
+			System.out.println(mapper.writeValueAsString(result));
+			System.out.println("抓取和解析完成。");
+			return result;
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	public static String getResponseBody(CloseableHttpResponse httpResponse) throws ParseException, IOException{      
+		String text = "";
+		try {
+			text = EntityUtils.toString(httpResponse.getEntity(),"utf-8");
+			EntityUtils.consume(httpResponse.getEntity());
+		} finally {
+			httpResponse.close();
+		}
+		return text;
+    }
+	
+	public static String getPath() {
+		String path = CompanySearch.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+		if (path.toUpperCase().indexOf(".JAR") != -1) {
+			String jarPath = path.substring(0, path.toUpperCase().indexOf(".jar".toUpperCase()));
+			return jarPath.substring(0, jarPath.lastIndexOf("/") + 1);
+		}
+		return path;
+	}
+	
+	@SuppressWarnings("unchecked")
+	private static List<Map<String,String>> doLogin(String key) {
+		System.out.println("开始重新登录...");
+		try {
+			Map<String, Object> params = new HashMap<>();
+			params.put("autoLogin", true);
+			params.put("loginway", "PL");
+			params.put("cdpassword", password);
+			params.put("mobile", username);
+			HttpPost post = new HttpPost(baseUrl + loginPath); 
+			post.setHeader("User-Agent", userAgent);  
+			post.setHeader("Referer", "https://www.tianyancha.com/login?from=" + java.net.URLEncoder.encode(MessageFormat.format(baseUrl + searchPath, java.net.URLEncoder.encode(key, "UTF-8")), "UTF-8"));  
+//			post.setConfig(defaultConfig);
+			
+			StringEntity entity = new StringEntity("{\"autoLogin\":true,\"loginway\":\"PL\",\"cdpassword\":\"" + password + "\",\"mobile\":\"" + username + "\"}", Charset.forName("utf-8"));
+	        // 发送Json格式的数据请求
+	        entity.setContentType("application/json");
+	        post.setEntity(entity);
+	        CloseableHttpResponse httpResponse = httpclient.execute(post, httpcontext);
+	        String text = getResponseBody(httpResponse);
+			
+			Map<String, Object> result = mapper.readValue(text, Map.class);
+			if(!"ok".equals(result.get("state"))) {
+				System.out.println("登录认证失败：" + text);
+				return null;
+			}
+			Map<String, Object> data = (Map<String, Object>) result.get("data");
+			String s = java.net.URLEncoder.encode(mapper.writeValueAsString(data), "UTF-8");
+			String tycUserInfo = java.net.URLEncoder.encode(s, "ISO8859-1");
+			String authToken = data.get("token").toString();
+			BasicClientCookie userInfo = new BasicClientCookie("tyc-user-info", tycUserInfo);
+			userInfo.setVersion(0);  
+			userInfo.setDomain("www.tianyancha.com");
+			userInfo.setPath("/");
+			httpcontext.getCookieStore().addCookie(userInfo);
+			BasicClientCookie token = new BasicClientCookie("auth_token", authToken);
+			token.setVersion(0);  
+			token.setDomain("www.tianyancha.com");
+			token.setPath("/");
+			httpcontext.getCookieStore().addCookie(token);
+			System.out.println("登录成功["+text+"]");
+			return searchByKey(key);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	public static List<String> displays = Arrays.asList("工商注册号", "组织机构代码", "统一社会信用代码", "公司类型", "纳税人识别号", "行业", "营业期限", "核准日期", "纳税人资质",
+			"人员规模", "实缴资本", "登记机关", "参保人数", "英文名称", "注册地址", "经营范围");
+	public static List<String> names = Arrays.asList("gszch", "zzjgdm", "tyshxydm", "gslx", "nsrsbm", "hy", "yyqx", "hzrq", "nsrzz", "rygm", "sjzb", "djjg", "cbrs", "ywmc", "zcdz", "jyfw");
+	
+	public static Map<String, String> getCompanyBaseInfo(String dataId) {
+		try {
+			String dataUrl = "https://www.tianyancha.com/company/" + java.net.URLEncoder.encode(dataId, "UTF-8");
+			HttpGet get = new HttpGet(dataUrl);
+			get.setHeader("User-Agent", userAgent);
+//			get.setConfig(defaultConfig);
+			CloseableHttpResponse httpResponse = httpclient.execute(get, httpcontext);
+	        String text = getResponseBody(httpResponse);
+			Document doc = Jsoup.parse(text);
+			Map<String, String> result = new LinkedHashMap<String, String>();
+			Map<String, String> others = new LinkedHashMap<String, String>();
+			result.put("companyId", dataId);
+			//获取公司名称
+			Elements companyName = doc.select("#company_web_top .box .content .header .name");
+			if(!companyName.isEmpty()) {
+				result.put("companyName", companyName.get(0).ownText());
+			}
+			//获取法人
+			Elements humancompanyName = doc.select(".humancompany .name a");
+			if(!humancompanyName.isEmpty()) {
+				result.put("humancompanyName", humancompanyName.get(0).ownText());
+			}
+			// 页面属性选择 通过key值取到查询结果集
+			Elements items = doc.select("table.table.-striped-col.-border-top-none tbody tr");
+			for(Element e: items){
+				Elements tds = e.select("td");
+				boolean nextIsName = true; String name = "";
+				for(Element td: tds) {
+					if(nextIsName) {
+						name = td.ownText();
+						nextIsName = false;
+					}else{
+						int i = displays.indexOf(name);
+						if(i>=0) {
+							result.put(names.get(i), td.ownText());
+						}else {
+							others.put(name, td.ownText());
+						}
+						nextIsName = true;
+					}
+				}
+	        }
+			result.put("others", mapper.writeValueAsString(others));
+			return result;
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+	
+	public static void main(String[] args) throws UnsupportedEncodingException {
+		System.out.println(StringX.isMatch("S201801151", "^(S)(2019)(01)([0-9]{3})$"));
+	}
+}
